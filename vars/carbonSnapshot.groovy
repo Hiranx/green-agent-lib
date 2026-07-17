@@ -23,16 +23,22 @@ def call(Map config = [:]) {
     def canaryWeight    = config.canaryWeight    ?: ''
     def note            = config.note            ?: ''
 
-    echo "📸 Carbon snapshot: phase=${phase} | strategy=${strategy} | infra=${infraMultiplier}x"
+    echo "Carbon snapshot: phase=${phase} | strategy=${strategy} | infra=${infraMultiplier}x"
 
-    def extras = ''
-    if (downtimeSeconds) extras += ""","downtime_seconds":"${downtimeSeconds}""""
-    if (canaryWeight)    extras += ""","canary_weight":"${canaryWeight}""""
-    if (note)            extras += ""","note":"${note}""""
+    // Build JSON using string concatenation — avoids triple-quote parsing errors
+    def body = '{"phase":"' + phase + '","strategy":"' + strategy + '","build_number":"' + buildNumber + '","infra_multiplier":' + infraMultiplier
 
-    sh """
-        curl -s -X POST ${metricsUrl}/carbon/snapshot \\
-            -H "Content-Type: application/json" \\
-            -d '{"phase":"${phase}","strategy":"${strategy}","build_number":"${buildNumber}","infra_multiplier":${infraMultiplier}${extras}}'
-    """
+    if (downtimeSeconds) {
+        body = body + ',"downtime_seconds":"' + downtimeSeconds + '"'
+    }
+    if (canaryWeight) {
+        body = body + ',"canary_weight":"' + canaryWeight + '"'
+    }
+    if (note) {
+        body = body + ',"note":"' + note + '"'
+    }
+
+    body = body + '}'
+
+    sh "curl -s -X POST ${metricsUrl}/carbon/snapshot -H 'Content-Type: application/json' -d '${body}'"
 }
