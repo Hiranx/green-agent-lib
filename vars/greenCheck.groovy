@@ -34,6 +34,18 @@
  *   env.AI_GREEN_GRADE   — "Excellent" | "Good" | "Moderate" | "Poor"
  *   env.AI_CO2_SAVING    — estimated CO2 saving percentage
  */
+// At the TOP of the call() function in greenCheck.groovy, before anything else:
+if (env.URGENT_DEPLOY == 'true') {
+    echo "⚡ Urgent deployment — skipping Green AI Check"
+    env.DEPLOY_STRATEGY = 'rolling'
+    env.CARBON_RATING   = 'skipped'
+    env.AI_GREEN_SCORE  = '0'
+    env.AI_GREEN_GRADE  = 'Skipped'
+    env.AI_REASON       = 'Urgent deployment - green check bypassed'
+    env.AI_CO2_SAVING   = '0'
+    return
+}
+
 def call(Map config = [:]) {
 
     // ── Defaults — override any of these in your call ─────────────────────
