@@ -2,16 +2,20 @@
  * greenCheck.groovy
  *
  * Jenkins Shared Library:
- *   greenCheck()
+ *     greenCheck()
  *
- * Checks the Green Deployment AI Agent before deployment.
+ * Green Deployment AI Agent check.
  *
- * IMPORTANT:
- * - Returns the selected deployment strategy as a String.
- * - Writes deployment values into env.
- * - Uses an ABSOLUTE Jenkins workspace path for JSON files.
- * - Uses curl --data-binary @FILE to avoid JSON/shell quoting issues.
- * - Does NOT incorrectly report curl file errors as "Agent unreachable".
+ * Behavior:
+ *   1. Calls the Green AI Agent.
+ *   2. Sends JSON using a request file.
+ *   3. Never embeds JSON directly inside curl.
+ *   4. Never uses Groovy GString interpolation inside shell scripts.
+ *   5. Safely falls back to DEPLOY + ROLLING if the agent is unavailable.
+ *   6. Supports DEPLOY / WAIT decisions.
+ *   7. Validates the returned strategy.
+ *   8. Stores AI values in Jenkins env variables.
+ *   9. Returns the selected strategy to the Jenkinsfile.
  */
 
 def call(Map config = [:]) {
@@ -43,7 +47,11 @@ def call(Map config = [:]) {
                    env.GREEN_AGENT_URL ?:
                    'http://172.17.0.1:5002'
 
-    // Remove trailing slash if supplied
+    // Remove trailing slash so:
+    // http://172.17.0.1:5002/
+    // becomes:
+    // http://172.17.0.1:5002
+
     agentUrl = agentUrl.toString().replaceAll('/+$', '')
 
     def maxWaitHours =
@@ -51,6 +59,14 @@ def call(Map config = [:]) {
 
     def checkIntervalMin =
         (config.checkIntervalMin ?: 30) as int
+
+    if (checkIntervalMin <= 0) {
+        error("Green AI checkIntervalMin must be greater than 0")
+    }
+
+    if (maxWaitHours <= 0) {
+        error("Green AI maxWaitHours must be greater than 0")
+    }
 
     def maxChecks = Math.max(
         1,
@@ -73,24 +89,23 @@ def call(Map config = [:]) {
     def aiCo2Saving  = '0'
     def aiWindow     = ''
 
-
     def jobName =
-        env.JOB_NAME ?: 'unknown'
+        (env.JOB_NAME ?: 'unknown').toString()
 
     def buildNumber =
-        env.BUILD_NUMBER ?: '?'
+        (env.BUILD_NUMBER ?: '?').toString()
 
 
     // ================================================================
-    // FALLBACK JSON
+    // FALLBACK RESPONSE
     // ================================================================
 
     def fallbackJson = groovy.json.JsonOutput.toJson([
         decision: 'deploy',
         strategy: 'rolling',
-        reason: 'Green AI Agent unavailable - using safe default',
+        reason: 'Agent unreachable - using safe default',
         carbon_rating: 'unknown',
-        confidence: '0.5',
+        confidence: '0.0',
         green_score: 'N/A',
         green_grade: 'N/A',
         estimated_co2_saving_pct: '0',
@@ -114,63 +129,135 @@ def call(Map config = [:]) {
 
 
         // ============================================================
-        // FILE NAMES
-        // ============================================================
-
-        def requestFile =
-            "green_ai_request_${attempt}.json"
-
-        def responseFile =
-            "green_ai_response_${attempt}.json"
-
-
-        // ============================================================
-        // ABSOLUTE WORKSPACE PATHS
+        // REQUEST / RESPONSE FILES
         //
-        // THIS IS THE IMPORTANT FIX.
+        // Use fixed filenames.
+        //
+        // This avoids:
+        //   - Groovy interpolation problems
+        //   - shell variable problems
+        //   - Jenkins workspace path problems
         // ============================================================
 
-        def workspace =
-            env.WORKSPACE ?: pwd()
-
-        def requestPath =
-            "${workspace}/${requestFile}"
-
-        def responsePath =
-            "${workspace}/${responseFile}"
+        def requestFile  = 'green_ai_request.json'
+        def responseFile = 'green_ai_response.json'
 
 
         // ============================================================
         // CREATE JSON PAYLOAD
         // ============================================================
 
-        def requestPayload =
-            groovy.json.JsonOutput.toJson([
-                job_name: jobName,
-                build_number: buildNumber.toString()
-            ])
-
+        def requestPayload = groovy.json.JsonOutput.toJson([
+            job_name: jobName,
+            build_number: buildNumber
+        ])
 
         writeFile(
             file: requestFile,
             text: requestPayload
         )
 
-
-        echo "📄 AI request file: ${requestPath}"
+        echo "📄 Green AI request created"
 
 
         // ============================================================
-        // VERIFY REQUEST FILE EXISTS
+        // SHOW REQUEST FOR DEBUGGING
+        //
+        // Safe because this contains only job/build information.
         // ============================================================
 
-        def requestExists =
-            fileExists(requestFile)
+        echo "Green AI request:"
+        echo requestPayload
 
-        if (!requestExists) {
 
-            echo "❌ AI request file was NOT created."
-            echo "   Expected: ${requestPath}"
+        // ============================================================
+        // REMOVE OLD RESPONSE
+        // ============================================================
+
+        sh(
+            script: '''
+                rm -f green_ai_response.json
+            '''
+        )
+
+
+        // ============================================================
+        // CALL GREEN AI AGENT
+        //
+        // IMPORTANT:
+        //
+        // Use SINGLE-QUOTED Groovy string:
+        //
+        //     '''
+        //
+        // NOT:
+        //
+        //     """
+        //
+        // This prevents Groovy from interpreting shell $ variables.
+        // ============================================================
+
+        def curlStatus = 1
+
+        withEnv([
+            "GREEN_AGENT_URL=${agentUrl}"
+        ]) {
+
+            curlStatus = sh(
+                script: '''
+                    set +e
+
+                    echo "[GREEN AI] Calling agent..."
+                    echo "[GREEN AI] URL: ${GREEN_AGENT_URL}/api/check"
+
+                    curl \
+                        -sS \
+                        -f \
+                        --connect-timeout 10 \
+                        --max-time 30 \
+                        -X POST \
+                        "${GREEN_AGENT_URL}/api/check" \
+                        -H "Content-Type: application/json" \
+                        --data-binary "@green_ai_request.json" \
+                        -o "green_ai_response.json"
+
+                    EXIT_CODE=$?
+
+                    echo "[GREEN AI] curl exit code: $EXIT_CODE"
+
+                    if [ "$EXIT_CODE" -ne 0 ]; then
+                        echo "[GREEN AI] curl request failed"
+                        exit "$EXIT_CODE"
+                    fi
+
+                    if [ ! -f "green_ai_response.json" ]; then
+                        echo "[GREEN AI] Response file was not created"
+                        exit 4
+                    fi
+
+                    if [ ! -s "green_ai_response.json" ]; then
+                        echo "[GREEN AI] Response file is empty"
+                        exit 5
+                    fi
+
+                    echo "[GREEN AI] Response received"
+
+                    exit 0
+                ''',
+                returnStatus: true
+            )
+        }
+
+
+        // ================================================================
+        // HANDLE AGENT FAILURE
+        // ================================================================
+
+        if (curlStatus != 0) {
+
+            echo "⚠️ Green AI Agent unreachable."
+            echo "   Agent URL : ${agentUrl}"
+            echo "   curl code : ${curlStatus}"
             echo "   Using safe fallback: DEPLOY + ROLLING"
 
             writeFile(
@@ -180,105 +267,8 @@ def call(Map config = [:]) {
 
         } else {
 
-            echo "✅ AI request file created successfully."
+            echo "✅ Green AI Agent responded successfully"
 
-            // ========================================================
-            // CALL AI AGENT
-            // ========================================================
-
-            def curlStatus = sh(
-                script: """
-                    set +e
-
-                    echo "[GREEN AI] Workspace:"
-                    pwd
-
-                    echo "[GREEN AI] Request file:"
-                    ls -l "${requestPath}"
-
-                    echo "[GREEN AI] Request payload:"
-                    cat "${requestPath}"
-
-                    echo "[GREEN AI] Calling:"
-                    echo "${agentUrl}/api/check"
-
-                    rm -f "${responsePath}"
-
-                    curl -sS -f \\
-                        --connect-timeout 10 \\
-                        --max-time 30 \\
-                        -X POST \\
-                        "${agentUrl}/api/check" \\
-                        -H "Content-Type: application/json" \\
-                        --data-binary "@${requestPath}" \\
-                        -o "${responsePath}"
-
-                    EXIT_CODE=\\$?
-
-                    echo "[GREEN AI] curl exit code: \\${EXIT_CODE}"
-
-                    if [ "\\${EXIT_CODE}" -ne 0 ]; then
-                        exit "\\${EXIT_CODE}"
-                    fi
-
-                    if [ ! -f "${responsePath}" ]; then
-                        echo "[GREEN AI] Response file was not created."
-                        exit 4
-                    fi
-
-                    if [ ! -s "${responsePath}" ]; then
-                        echo "[GREEN AI] Response file is empty."
-                        exit 5
-                    fi
-
-                    echo "[GREEN AI] Response received:"
-                    cat "${responsePath}"
-
-                    exit 0
-                """,
-                returnStatus: true
-            )
-
-
-            // ========================================================
-            // HANDLE CURL FAILURE
-            // ========================================================
-
-            if (curlStatus != 0) {
-
-                echo "⚠️ Green AI request failed."
-                echo "   curl exit code: ${curlStatus}"
-                echo "   Agent URL      : ${agentUrl}/api/check"
-                echo "   Request file   : ${requestPath}"
-
-                if (curlStatus == 6) {
-                    echo "   Cause: Could not resolve agent hostname."
-                }
-
-                if (curlStatus == 7) {
-                    echo "   Cause: Could not connect to Green AI Agent."
-                }
-
-                if (curlStatus == 22) {
-                    echo "   Cause: Green AI Agent returned an HTTP error."
-                }
-
-                if (curlStatus == 26) {
-                    echo "   Cause: curl could not read the request file."
-                    echo "   This should NOT happen with the absolute path fix."
-                }
-
-                if (curlStatus == 28) {
-                    echo "   Cause: Green AI Agent request timed out."
-                }
-
-                echo "   Using safe fallback: DEPLOY + ROLLING"
-
-                writeFile(
-                    file: responseFile,
-                    text: fallbackJson
-                )
-            }
         }
 
 
@@ -295,27 +285,47 @@ def call(Map config = [:]) {
 
         } catch (Exception e) {
 
-            echo "⚠️ Could not read AI response file."
-            echo "   File: ${responseFile}"
+            echo "⚠️ Could not read Green AI response file."
             echo "   Error: ${e.message}"
+            echo "   Using safe fallback."
 
-            agentResponse =
-                fallbackJson
+            agentResponse = fallbackJson
         }
 
 
         // ================================================================
-        // EMPTY RESPONSE
+        // EMPTY RESPONSE SAFETY
         // ================================================================
 
         if (!agentResponse) {
 
-            echo "⚠️ Empty response from Green AI Agent."
-            echo "   Using safe fallback."
+            echo "⚠️ Green AI returned an empty response."
+            echo "   Using safe fallback: DEPLOY + ROLLING"
 
-            agentResponse =
-                fallbackJson
+            agentResponse = fallbackJson
         }
+
+
+        // ================================================================
+        // DISPLAY RAW RESPONSE
+        // ================================================================
+
+        echo "Green AI response:"
+        echo agentResponse
+
+
+        // ================================================================
+        // RESET VALUES BEFORE PARSING
+        // ================================================================
+
+        aiDecision   = 'deploy'
+        aiStrategy   = 'rolling'
+        aiReason     = 'Agent response not parsed'
+        aiCarbon     = 'unknown'
+        aiGreenScore = 'N/A'
+        aiGreenGrade = 'N/A'
+        aiCo2Saving  = '0'
+        aiWindow     = ''
 
 
         // ================================================================
@@ -328,73 +338,48 @@ def call(Map config = [:]) {
                 new groovy.json.JsonSlurper().parseText(agentResponse)
 
 
-            aiDecision =
-                (
-                    parsed.decision != null
-                        ? parsed.decision
-                        : 'deploy'
-                ).toString()
+            if (parsed.decision != null) {
+                aiDecision =
+                    parsed.decision.toString()
+            }
 
+            if (parsed.strategy != null) {
+                aiStrategy =
+                    parsed.strategy.toString()
+            }
 
-            aiStrategy =
-                (
-                    parsed.strategy != null
-                        ? parsed.strategy
-                        : 'rolling'
-                ).toString()
+            if (parsed.reason != null) {
+                aiReason =
+                    parsed.reason.toString()
+            }
 
+            if (parsed.carbon_rating != null) {
+                aiCarbon =
+                    parsed.carbon_rating.toString()
+            }
 
-            aiReason =
-                (
-                    parsed.reason != null
-                        ? parsed.reason
-                        : ''
-                ).toString()
+            if (parsed.green_score != null) {
+                aiGreenScore =
+                    parsed.green_score.toString()
+            }
 
+            if (parsed.green_grade != null) {
+                aiGreenGrade =
+                    parsed.green_grade.toString()
+            }
 
-            aiCarbon =
-                (
-                    parsed.carbon_rating != null
-                        ? parsed.carbon_rating
-                        : 'unknown'
-                ).toString()
+            if (parsed.estimated_co2_saving_pct != null) {
+                aiCo2Saving =
+                    parsed.estimated_co2_saving_pct.toString()
+            }
 
+            if (parsed.next_green_window != null) {
+                aiWindow =
+                    parsed.next_green_window.toString()
+            }
 
-            aiGreenScore =
-                (
-                    parsed.green_score != null
-                        ? parsed.green_score
-                        : 'N/A'
-                ).toString()
-
-
-            aiGreenGrade =
-                (
-                    parsed.green_grade != null
-                        ? parsed.green_grade
-                        : 'N/A'
-                ).toString()
-
-
-            aiCo2Saving =
-                (
-                    parsed.estimated_co2_saving_pct != null
-                        ? parsed.estimated_co2_saving_pct
-                        : '0'
-                ).toString()
-
-
-            aiWindow =
-                (
-                    parsed.next_green_window != null
-                        ? parsed.next_green_window
-                        : ''
-                ).toString()
-
-
-            // Prevent LazyMap from surviving CPS checkpoints
+            // Prevent LazyMap from surviving CPS suspension.
             parsed = null
-
 
         } catch (Exception e) {
 
@@ -402,7 +387,6 @@ def call(Map config = [:]) {
             echo "   Response: ${agentResponse}"
             echo "   Error: ${e.message}"
             echo "   Using safe fallback: DEPLOY + ROLLING"
-
 
             aiDecision   = 'deploy'
             aiStrategy   = 'rolling'
@@ -430,11 +414,7 @@ def call(Map config = [:]) {
         // VALIDATE STRATEGY
         // ================================================================
 
-        if (!(aiStrategy in [
-            'rolling',
-            'canary',
-            'recreate'
-        ])) {
+        if (!(aiStrategy in ['rolling', 'canary', 'recreate'])) {
 
             echo "⚠️ Invalid strategy returned by AI: ${aiStrategy}"
             echo "   Falling back to rolling."
@@ -447,13 +427,9 @@ def call(Map config = [:]) {
         // VALIDATE DECISION
         // ================================================================
 
-        if (!(aiDecision in [
-            'deploy',
-            'wait'
-        ])) {
+        if (!(aiDecision in ['deploy', 'wait'])) {
 
-            def invalidDecision =
-                aiDecision
+            def invalidDecision = aiDecision
 
             echo "⚠️ Unknown AI decision returned: ${invalidDecision}"
             echo "   Falling back to DEPLOY + ROLLING."
@@ -493,6 +469,10 @@ def call(Map config = [:]) {
 
         if (aiDecision == 'deploy') {
 
+            // ------------------------------------------------------------
+            // Persist values in Jenkins environment
+            // ------------------------------------------------------------
+
             env.DEPLOY_STRATEGY =
                 aiStrategy.toString()
 
@@ -517,10 +497,12 @@ def call(Map config = [:]) {
             echo "   Carbon   : ${env.CARBON_RATING}"
             echo "   Score    : ${env.AI_GREEN_SCORE}/100 (${env.AI_GREEN_GRADE})"
 
+            echo "🌿 AI selected deployment strategy: ${env.DEPLOY_STRATEGY}"
 
-            // ============================================================
-            // RETURN STRATEGY TO JENKINSFILE
-            // ============================================================
+            // ------------------------------------------------------------
+            // IMPORTANT
+            // Return String directly to Jenkinsfile.
+            // ------------------------------------------------------------
 
             return aiStrategy.toString()
         }
@@ -557,12 +539,15 @@ Then re-trigger this build manually.
                     ? aiWindow
                     : 'unknown'
 
-
             echo "⏳ Waiting for green window: ${displayWindow}"
             echo "   Sleeping ${checkIntervalMin} minutes..."
             echo "   Attempt ${attempt}/${maxChecks}"
             echo "   Maximum wait: ${maxWaitHours} hours"
 
+
+            // ------------------------------------------------------------
+            // Sleep
+            // ------------------------------------------------------------
 
             sleep(
                 time: checkIntervalMin,
@@ -577,14 +562,16 @@ Then re-trigger this build manually.
         // FINAL SAFETY FALLBACK
         // ================================================================
 
-        echo "⚠️ Falling back to safe deployment strategy: ROLLING"
+        echo "⚠️ Final safety fallback: DEPLOY + ROLLING"
 
         env.DEPLOY_STRATEGY = 'rolling'
-        env.CARBON_RATING   = aiCarbon
+        env.CARBON_RATING   = aiCarbon.toString()
         env.AI_REASON       = 'Safe fallback - rolling deployment'
-        env.AI_GREEN_SCORE  = aiGreenScore
-        env.AI_GREEN_GRADE  = aiGreenGrade
-        env.AI_CO2_SAVING   = aiCo2Saving
+        env.AI_GREEN_SCORE  = aiGreenScore.toString()
+        env.AI_GREEN_GRADE  = aiGreenGrade.toString()
+        env.AI_CO2_SAVING   = aiCo2Saving.toString()
+
+        echo "🌿 AI selected deployment strategy: rolling"
 
         return 'rolling'
     }
