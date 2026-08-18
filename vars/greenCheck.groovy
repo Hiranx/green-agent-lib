@@ -214,7 +214,7 @@ def call(Map config = [:]) {
                         -sS \
                         -f \
                         --connect-timeout 10 \
-                        --max-time 30 \
+                        --max-time 180 \
                         -X POST \
                         "${GREEN_AGENT_URL}/api/check" \
                         -H "Content-Type: application/json" \
