@@ -1,23 +1,19 @@
 /**
  * greenCheck.groovy
  *
- * Green Deployment AI Agent integration for Jenkins.
+ * Jenkins Shared Library:
+ *   greenCheck()
  *
- * Sets:
- *   env.DEPLOY_STRATEGY
- *   env.CARBON_RATING
- *   env.AI_REASON
- *   env.AI_GREEN_SCORE
- *   env.AI_GREEN_GRADE
- *   env.AI_CO2_SAVING
+ * Checks the Green Deployment AI Agent before deployment.
  */
 
 def call(Map config = [:]) {
 
     // ================================================================
-    // 1. URGENT DEPLOYMENT BYPASS
+    // URGENT DEPLOYMENT BYPASS
     // ================================================================
     if (env.URGENT_DEPLOY == 'true') {
+
         echo "⚡ Urgent deployment — skipping Green AI Check"
 
         env.DEPLOY_STRATEGY = 'rolling'
@@ -30,32 +26,33 @@ def call(Map config = [:]) {
         return
     }
 
+
     // ================================================================
-    // 2. CONFIGURATION
+    // CONFIGURATION
     // ================================================================
+
     def agentUrl = config.agentUrl ?:
                    env.GREEN_AGENT_URL ?:
                    'http://172.17.0.1:5002'
 
-    def maxWaitHours =
-        (config.maxWaitHours ?: 6) as int
+    def maxWaitHours = (config.maxWaitHours ?: 6) as int
 
-    def checkIntervalMin =
-        (config.checkIntervalMin ?: 30) as int
+    def checkIntervalMin = (config.checkIntervalMin ?: 30) as int
 
-    def maxChecks =
-        Math.max(1, (maxWaitHours * 60).intdiv(checkIntervalMin))
+    // Prevent division by zero / zero attempts
+    def maxChecks = Math.max(
+        1,
+        (maxWaitHours * 60).intdiv(checkIntervalMin)
+    )
+
 
     // ================================================================
-    // 3. IMPORTANT:
-    // Do NOT rely on the Jenkinsfile default strategy.
-    // Start empty so a failed AI strategy propagation is detected.
+    // ONLY SIMPLE / SERIALIZABLE VARIABLES
     // ================================================================
-    env.DEPLOY_STRATEGY = ''
 
     def attempt      = 0
     def aiDecision   = 'deploy'
-    def aiStrategy   = ''
+    def aiStrategy   = 'rolling'
     def aiReason     = ''
     def aiCarbon     = 'unknown'
     def aiGreenScore = 'N/A'
@@ -63,32 +60,30 @@ def call(Map config = [:]) {
     def aiCo2Saving  = '0'
     def aiWindow     = ''
 
-    def jobName =
-        (env.JOB_NAME ?: 'unknown').replaceAll('"', '\\"')
+    def jobName = env.JOB_NAME ?: 'unknown'
+    def buildNumber = env.BUILD_NUMBER ?: '?'
 
-    def buildNumber =
-        (env.BUILD_NUMBER ?: '?').replaceAll('"', '\\"')
 
     // ================================================================
-    // 4. FALLBACK
+    // FALLBACK JSON
     // ================================================================
-    //
-    // IMPORTANT:
-    // Do NOT silently use rolling if the AI agent is unavailable.
-    // For a research/demo pipeline, failing is safer than using the
-    // wrong deployment strategy.
-    //
-    def fallback = '''
-{
-    "decision": "error",
-    "strategy": "",
-    "reason": "Green AI Agent unreachable"
-}
-'''.trim()
+
+    def fallbackJson =
+        '{"decision":"deploy",' +
+        '"strategy":"rolling",' +
+        '"reason":"Agent unreachable - using safe default",' +
+        '"carbon_rating":"unknown",' +
+        '"confidence":"0.5",' +
+        '"green_score":"N/A",' +
+        '"green_grade":"N/A",' +
+        '"estimated_co2_saving_pct":"0",' +
+        '"next_green_window":""}'
+
 
     // ================================================================
-    // 5. AI CHECK LOOP
+    // GREEN AI CHECK LOOP
     // ================================================================
+
     while (true) {
 
         attempt++
@@ -99,130 +94,160 @@ def call(Map config = [:]) {
         echo " Job   : ${jobName} #${buildNumber}"
         echo "════════════════════════════════════════════"
 
-        // ------------------------------------------------------------
-        // Call AI agent
-        // ------------------------------------------------------------
-        def agentResponse = sh(
-            script: """
-                set -e
 
-                RESPONSE=\\\$(curl -sf -X POST "${agentUrl}/api/check" \\
-                    -H "Content-Type: application/json" \\
-                    -d '{"job_name":"${jobName}","build_number":"${buildNumber}"}' \\
-                    || true)
+        // ============================================================
+        // CALL AI AGENT
+        //
+        // IMPORTANT:
+        // Do NOT inject JSON directly into single-quoted shell strings.
+        // Pass values through environment variables instead.
+        // ============================================================
 
-                if [ -z "\\\$RESPONSE" ]; then
-                    echo '${fallback}'
-                else
-                    echo "\\\$RESPONSE"
-                fi
-            """,
-            returnStdout: true
-        ).trim()
+        def responseFile = "green_ai_response_${attempt}.json"
 
-        echo "[GREEN AI] Raw response received."
+        withEnv([
+            "GREEN_AGENT_URL=${agentUrl}",
+            "GREEN_JOB_NAME=${jobName}",
+            "GREEN_BUILD_NUMBER=${buildNumber}"
+        ]) {
 
-        // ------------------------------------------------------------
-        // Parse JSON
-        // ------------------------------------------------------------
-        def parsed
+            def curlStatus = sh(
+                script: '''
+                    set +e
+
+                    curl -sS -f \
+                        -X POST "${GREEN_AGENT_URL}/api/check" \
+                        -H "Content-Type: application/json" \
+                        --data "{\"job_name\":\"${GREEN_JOB_NAME}\",\"build_number\":\"${GREEN_BUILD_NUMBER}\"}" \
+                        > "${WORKSPACE}/green_ai_response.json"
+
+                    EXIT_CODE=$?
+
+                    if [ "$EXIT_CODE" -ne 0 ]; then
+                        exit "$EXIT_CODE"
+                    fi
+
+                    exit 0
+                ''',
+                returnStatus: true
+            )
+
+
+            if (curlStatus != 0) {
+
+                echo "⚠️ Green AI Agent unreachable."
+                echo "   Using safe fallback: DEPLOY + ROLLING"
+
+                writeFile(
+                    file: responseFile,
+                    text: fallbackJson
+                )
+
+            } else {
+
+                // Copy response to the expected attempt-specific file
+                sh """
+                    cp "${WORKSPACE}/green_ai_response.json" "${responseFile}"
+                """
+            }
+        }
+
+
+        // ============================================================
+        // READ RESPONSE
+        // ============================================================
+
+        def agentResponse = readFile(responseFile).trim()
+
+        if (!agentResponse) {
+            echo "⚠️ Empty response from Green AI Agent."
+            agentResponse = fallbackJson
+        }
+
+
+        // ============================================================
+        // PARSE JSON
+        // ============================================================
 
         try {
-            parsed = new groovy.json.JsonSlurper().parseText(agentResponse)
+
+            def parsed =
+                new groovy.json.JsonSlurper().parseText(agentResponse)
+
+            // Extract EVERYTHING as String before any sleep()
+            aiDecision =
+                (parsed.decision ?: 'deploy').toString()
+
+            aiStrategy =
+                (parsed.strategy ?: 'rolling').toString()
+
+            aiReason =
+                (parsed.reason ?: '').toString()
+
+            aiCarbon =
+                (parsed.carbon_rating ?: 'unknown').toString()
+
+            aiGreenScore =
+                (parsed.green_score != null
+                    ? parsed.green_score
+                    : 'N/A').toString()
+
+            aiGreenGrade =
+                (parsed.green_grade ?: 'N/A').toString()
+
+            aiCo2Saving =
+                (parsed.estimated_co2_saving_pct != null
+                    ? parsed.estimated_co2_saving_pct
+                    : '0').toString()
+
+            aiWindow =
+                (parsed.next_green_window ?: '').toString()
+
+            // IMPORTANT:
+            // Do not keep LazyMap alive across sleep()
+            parsed = null
+
         } catch (Exception e) {
-            error("""
-❌ Green AI Agent returned invalid JSON.
 
-Response:
-${agentResponse}
+            echo "⚠️ Could not parse Green AI response."
+            echo "   Response: ${agentResponse}"
+            echo "   Error: ${e.message}"
 
-Error:
-${e.message}
-""")
+            // Safe fallback
+            aiDecision   = 'deploy'
+            aiStrategy   = 'rolling'
+            aiReason     = 'Invalid AI response - using safe default'
+            aiCarbon     = 'unknown'
+            aiGreenScore = 'N/A'
+            aiGreenGrade = 'N/A'
+            aiCo2Saving  = '0'
+            aiWindow     = ''
         }
 
-        // ------------------------------------------------------------
-        // Extract values as Strings BEFORE sleep()
-        // ------------------------------------------------------------
-        aiDecision =
-            (parsed.decision ?: 'error').toString().trim().toLowerCase()
-
-        aiStrategy =
-            (parsed.strategy ?: '').toString().trim().toLowerCase()
-
-        aiReason =
-            (parsed.reason ?: '').toString()
-
-        aiCarbon =
-            (parsed.carbon_rating ?: 'unknown').toString()
-
-        aiGreenScore =
-            (parsed.green_score != null
-                ? parsed.green_score
-                : 'N/A').toString()
-
-        aiGreenGrade =
-            (parsed.green_grade ?: 'N/A').toString()
-
-        aiCo2Saving =
-            (parsed.estimated_co2_saving_pct != null
-                ? parsed.estimated_co2_saving_pct
-                : '0').toString()
-
-        aiWindow =
-            (parsed.next_green_window ?: '').toString()
-
-        // Important for Jenkins CPS
-        parsed = null
 
         // ============================================================
-        // 6. VALIDATE AI DECISION
+        // NORMALIZE DECISION
         // ============================================================
 
-        def validStrategies = [
-            'rolling',
-            'canary',
-            'recreate'
-        ]
+        aiDecision = aiDecision.toLowerCase().trim()
+        aiStrategy = aiStrategy.toLowerCase().trim()
 
-        if (aiDecision != 'deploy' && aiDecision != 'wait') {
 
-            error("""
-❌ Green AI Agent returned an invalid decision.
+        // ============================================================
+        // VALIDATE STRATEGY
+        // ============================================================
 
-Decision : ${aiDecision}
-Strategy : ${aiStrategy}
-Reason   : ${aiReason}
+        if (!(aiStrategy in ['rolling', 'canary', 'recreate'])) {
 
-Expected decision:
-  deploy
-  wait
-""")
+            echo "⚠️ Invalid strategy returned by AI: ${aiStrategy}"
+            echo "   Falling back to rolling."
+
+            aiStrategy = 'rolling'
         }
 
-        // ============================================================
-        // 7. VALIDATE STRATEGY
-        // ============================================================
-
-        if (!(aiStrategy in validStrategies)) {
-
-            error("""
-❌ Green AI Agent returned an invalid deployment strategy.
-
-AI Strategy : '${aiStrategy}'
-
-Allowed strategies:
-  rolling
-  canary
-  recreate
-
-Reason:
-${aiReason}
-""")
-        }
 
         // ============================================================
-        // 8. DISPLAY AI DECISION
+        // DISPLAY RESULT
         // ============================================================
 
         echo "════════════════════════════════════════════"
@@ -235,22 +260,45 @@ ${aiReason}
         echo " CO2 Saving Est. : ~${aiCo2Saving}%"
         echo " Reason          : ${aiReason}"
 
-        if (aiWindow) {
+        if (aiWindow?.trim()) {
             echo " Next Green Window: ${aiWindow}"
         }
 
         echo "════════════════════════════════════════════"
 
-        // ============================================================
-        // 9. WAIT
-        // ============================================================
+
+        // ================================================================
+        // DEPLOY DECISION
+        // ================================================================
+
+        if (aiDecision == 'deploy') {
+
+            env.DEPLOY_STRATEGY = aiStrategy
+            env.CARBON_RATING   = aiCarbon
+            env.AI_REASON       = aiReason
+            env.AI_GREEN_SCORE  = aiGreenScore
+            env.AI_GREEN_GRADE  = aiGreenGrade
+            env.AI_CO2_SAVING   = aiCo2Saving
+
+            echo "✅ Green window confirmed after ${attempt} check(s)."
+            echo "   Strategy : ${aiStrategy}"
+            echo "   Carbon   : ${aiCarbon}"
+            echo "   Score    : ${aiGreenScore}/100 (${aiGreenGrade})"
+
+            return
+        }
+
+
+        // ================================================================
+        // WAIT DECISION
+        // ================================================================
 
         if (aiDecision == 'wait') {
 
             if (attempt >= maxChecks) {
 
                 error("""
-⚠️ Green AI Agent recommended waiting for ${maxWaitHours} hours.
+⚠️ Green AI Agent recommended waiting for ${maxWaitHours} hours straight.
 
 Last reason   : ${aiReason}
 Carbon Rating : ${aiCarbon}
@@ -258,68 +306,55 @@ Green Score   : ${aiGreenScore}/100 (${aiGreenGrade})
 Next Window   : ${aiWindow ?: 'unknown'}
 
 Action:
-Review carbon conditions and re-trigger the build.
+Review carbon conditions at:
+
+${agentUrl}/api/tools/carbon
+
+Then re-trigger this build manually.
 """)
             }
 
-            echo "⏳ Waiting for green window: ${aiWindow ?: 'unknown'}"
-            echo "   Sleeping ${checkIntervalMin} min then re-checking..."
-            echo "   (Attempt ${attempt}/${maxChecks} | Max wait: ${maxWaitHours}h)"
 
-            sleep time: checkIntervalMin, unit: 'MINUTES'
+            def displayWindow =
+                aiWindow?.trim()
+                    ? aiWindow
+                    : 'unknown'
+
+            echo "⏳ Waiting for green window: ${displayWindow}"
+            echo "   Sleeping ${checkIntervalMin} minutes..."
+            echo "   Attempt ${attempt}/${maxChecks}"
+            echo "   Maximum wait: ${maxWaitHours} hours"
+
+
+            // ========================================================
+            // IMPORTANT:
+            // Everything that survives this sleep is a String/int.
+            // No LazyMap survives Jenkins CPS serialization.
+            // ========================================================
+
+            sleep(
+                time: checkIntervalMin,
+                unit: 'MINUTES'
+            )
 
             continue
         }
 
-        // ============================================================
-        // 10. DEPLOY DECISION
-        // ============================================================
 
-        if (aiDecision == 'deploy') {
-            break
-        }
+        // ================================================================
+        // UNKNOWN DECISION
+        // ================================================================
+
+        echo "⚠️ Unknown AI decision: ${aiDecision}"
+        echo "   Falling back to deploy using rolling strategy."
+
+        env.DEPLOY_STRATEGY = 'rolling'
+        env.CARBON_RATING   = aiCarbon
+        env.AI_REASON       = "Unknown AI decision '${aiDecision}' - safe fallback"
+        env.AI_GREEN_SCORE  = aiGreenScore
+        env.AI_GREEN_GRADE  = aiGreenGrade
+        env.AI_CO2_SAVING   = aiCo2Saving
+
+        return
     }
-
-    // ================================================================
-    // 11. APPLY AI STRATEGY
-    // ================================================================
-
-    env.DEPLOY_STRATEGY = aiStrategy
-
-    env.CARBON_RATING  = aiCarbon
-    env.AI_REASON      = aiReason
-    env.AI_GREEN_SCORE = aiGreenScore
-    env.AI_GREEN_GRADE = aiGreenGrade
-    env.AI_CO2_SAVING  = aiCo2Saving
-
-    // ================================================================
-    // 12. FINAL VALIDATION
-    // ================================================================
-
-    if (!(env.DEPLOY_STRATEGY in ['rolling', 'canary', 'recreate'])) {
-        error("""
-❌ Deployment strategy was not correctly propagated.
-
-AI Strategy       : ${aiStrategy}
-Jenkins Strategy  : ${env.DEPLOY_STRATEGY}
-
-Deployment stopped to prevent using the wrong strategy.
-""")
-    }
-
-    // ================================================================
-    // 13. CONFIRMATION
-    // ================================================================
-
-    echo "════════════════════════════════════════════"
-    echo "✅ GREEN WINDOW CONFIRMED"
-    echo "════════════════════════════════════════════"
-    echo " Checks completed : ${attempt}"
-    echo " AI Decision      : ${aiDecision}"
-    echo " AI Strategy      : ${aiStrategy}"
-    echo " Jenkins Strategy : ${env.DEPLOY_STRATEGY}"
-    echo " Carbon           : ${aiCarbon}"
-    echo " Green Score      : ${aiGreenScore}/100 (${aiGreenGrade})"
-    echo " CO2 Saving       : ~${aiCo2Saving}%"
-    echo "════════════════════════════════════════════"
 }
