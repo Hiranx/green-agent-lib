@@ -472,7 +472,7 @@ def call(Map config = [:]) {
             // ------------------------------------------------------------
             // Persist values in Jenkins environment
             // ------------------------------------------------------------
-
+            echo "DEBUG: aiStrategy before assignment = ${aiStrategy}"
             env.DEPLOY_STRATEGY =
                 aiStrategy.toString()
 
