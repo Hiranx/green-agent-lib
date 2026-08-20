@@ -58,7 +58,7 @@ def call(Map config = [:]) {
         (config.maxWaitHours ?: 6) as int
 
     def checkIntervalMin =
-        (config.checkIntervalMin ?: 30) as int
+        (config.checkIntervalMin ?: 1) as int
 
     if (checkIntervalMin <= 0) {
         error("Green AI checkIntervalMin must be greater than 0")
