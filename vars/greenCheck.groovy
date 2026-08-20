@@ -197,57 +197,57 @@ def call(Map config = [:]) {
         // This prevents Groovy from interpreting shell $ variables.
         // ============================================================
 
+        // ============================================================
+        // CALL GREEN AI AGENT
+        // ============================================================
+        
         def curlStatus = 1
-
+        
         withEnv([
             "GREEN_AGENT_URL=${agentUrl}"
         ]) {
-
+        
             curlStatus = sh(
                 script: '''
                     set +e
-
+        
+                    rm -f green_ai_response.json
+        
                     echo "[GREEN AI] Calling agent..."
                     echo "[GREEN AI] URL: ${GREEN_AGENT_URL}/api/check"
-
-                    curl \
-                        -sS \
-                        -f \
+                    echo "[GREEN AI] Waiting for AI response..."
+        
+                    curl -sS -f \
                         --connect-timeout 10 \
                         --max-time 180 \
+                        --retry 0 \
                         -X POST \
                         "${GREEN_AGENT_URL}/api/check" \
                         -H "Content-Type: application/json" \
                         --data-binary "@green_ai_request.json" \
-                        -o "green_ai_response.json"
-
+                        -o green_ai_response.json
+        
                     EXIT_CODE=$?
-
-                    echo "[GREEN AI] curl exit code: $EXIT_CODE"
-
+        
+                    echo "[GREEN AI] curl exit code: ${EXIT_CODE}"
+        
                     if [ "$EXIT_CODE" -ne 0 ]; then
-                        echo "[GREEN AI] curl request failed"
+                        echo "[GREEN AI] Agent request failed."
                         exit "$EXIT_CODE"
                     fi
-
-                    if [ ! -f "green_ai_response.json" ]; then
-                        echo "[GREEN AI] Response file was not created"
+        
+                    if [ ! -s green_ai_response.json ]; then
+                        echo "[GREEN AI] Agent returned empty response."
                         exit 4
                     fi
-
-                    if [ ! -s "green_ai_response.json" ]; then
-                        echo "[GREEN AI] Response file is empty"
-                        exit 5
-                    fi
-
-                    echo "[GREEN AI] Response received"
-
+        
+                    echo "[GREEN AI] Agent response received."
+        
                     exit 0
                 ''',
                 returnStatus: true
             )
         }
-
 
         // ================================================================
         // HANDLE AGENT FAILURE
