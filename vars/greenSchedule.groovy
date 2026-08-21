@@ -131,7 +131,7 @@ def call(Map config = [:]) {
 
                 curl -sS -f \
                     --connect-timeout 10 \
-                    --max-time 30 \
+                    --max-time 180 \
                     --retry 0 \
                     -X POST \
                     "${GREEN_AGENT_URL}/api/check" \
