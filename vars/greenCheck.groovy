@@ -16,6 +16,17 @@
  *   7. Validates the returned strategy.
  *   8. Stores AI values in Jenkins env variables.
  *   9. Returns the selected strategy to the Jenkinsfile.
+ *
+ * Parameters:
+ *   singleShot (boolean, default false)
+ *     When false (default): runs the full polling loop, sleeping checkIntervalMin
+ *     minutes between retries, up to maxWaitHours. Original behaviour.
+ *
+ *     When true: makes exactly ONE call to the agent and returns immediately.
+ *     If the agent says 'wait', the strategy is still returned — the caller
+ *     (greenSchedule or Confirm Deploy Strategy stage) handles timing, not this
+ *     function. No sleep. No retry. Useful for pre-flight checks and fast
+ *     sanity checks at deploy time without holding a Jenkins executor.
  */
 
 def call(Map config = [:]) {
@@ -58,7 +69,7 @@ def call(Map config = [:]) {
         (config.maxWaitHours ?: 6) as int
 
     def checkIntervalMin =
-        (config.checkIntervalMin ?: 1) as int
+        (config.checkIntervalMin ?: 30) as int
 
     if (checkIntervalMin <= 0) {
         error("Green AI checkIntervalMin must be greater than 0")
@@ -68,10 +79,11 @@ def call(Map config = [:]) {
         error("Green AI maxWaitHours must be greater than 0")
     }
 
-    def maxChecks = Math.max(
-        1,
-        (maxWaitHours * 60).intdiv(checkIntervalMin)
-    )
+    def singleShot = config.singleShot == true
+
+    def maxChecks = singleShot
+        ? 1
+        : Math.max(1, (maxWaitHours * 60).intdiv(checkIntervalMin))
 
 
     // ================================================================
@@ -514,6 +526,26 @@ def call(Map config = [:]) {
 
         if (aiDecision == 'wait') {
 
+            // ── SINGLE-SHOT MODE ──────────────────────────────────────
+            // When singleShot=true the caller (greenSchedule / Confirm
+            // Deploy Strategy) handles timing. We return the strategy
+            // immediately without sleeping or looping.
+            if (singleShot) {
+                echo "⏳ [Single-shot] Agent recommends waiting. Returning strategy '${aiStrategy}' for caller to handle."
+                echo "   Next window : ${aiWindow ?: 'unknown'}"
+                echo "   Reason      : ${aiReason}"
+
+                env.DEPLOY_STRATEGY = aiStrategy.toString()
+                env.CARBON_RATING   = aiCarbon.toString()
+                env.AI_REASON       = aiReason.toString()
+                env.AI_GREEN_SCORE  = aiGreenScore.toString()
+                env.AI_GREEN_GRADE  = aiGreenGrade.toString()
+                env.AI_CO2_SAVING   = aiCo2Saving.toString()
+
+                return aiStrategy.toString()
+            }
+
+            // ── POLLING MODE (original behaviour) ────────────────────
             if (attempt >= maxChecks) {
 
                 error("""
