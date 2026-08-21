@@ -229,7 +229,8 @@ def call(Map config = [:]) {
                 shouldSchedule      : true,
                 scheduledHour       : targetHour,
                 delaySeconds        : delaySecs,
-                combinedConfidence  : (mlGreenProb * 0.5d) + (aiConfidence * 0.5d),
+                // When scheduling, high ML scheduling signal = low greenProb → high confidence
+                combinedConfidence  : ((1.0d - mlGreenProb) * 0.5d) + (aiConfidence * 0.5d),
                 preSelectedStrategy : aiStrategy,
                 mlGreenProbability  : mlGreenProb,
                 aiConfidence        : aiConfidence,
@@ -252,6 +253,7 @@ def call(Map config = [:]) {
     // --- Neither wants to wait → green now ---
     if (!mlWants && !aiWants) {
 
+        // When executing now, high mlGreenProb = confident it IS green → high confidence
         def combinedConf = (mlGreenProb * 0.5d) + (aiConfidence * 0.5d)
 
         echo '════════════════════════════════════════════'
@@ -288,7 +290,8 @@ def call(Map config = [:]) {
                        (Math.abs(mlScheduledHour - aiNextWindowHour) <= 1)
 
     def delaySecs    = _computeDelaySeconds(resolvedHour)
-    def combinedConf = (mlGreenProb * 0.5d) + (aiConfidence * 0.5d)
+    // When scheduling, invert mlGreenProb: low greenProb = very confident it's NOT green now
+    def combinedConf = ((1.0d - mlGreenProb) * 0.5d) + (aiConfidence * 0.5d)
 
     def reasonParts = []
     if (mlWants) {
