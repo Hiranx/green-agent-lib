@@ -94,6 +94,7 @@ def call(Map config = [:]) {
 
     def aiDecision   = 'deploy'
     def aiStrategy   = 'rolling'
+    def aiConfidence = 0.5d
     def aiReason     = ''
     def aiCarbon     = 'unknown'
     def aiGreenScore = 'N/A'
@@ -133,11 +134,15 @@ def call(Map config = [:]) {
 
         attempt++
 
-        echo "════════════════════════════════════════════"
-        echo " 🌿 Green AI Check — Attempt ${attempt}/${maxChecks}"
-        echo " Agent : ${agentUrl}"
-        echo " Job   : ${jobName} #${buildNumber}"
-        echo "════════════════════════════════════════════"
+        echo ''
+        echo '╔══════════════════════════════════════════════════════════╗'
+        echo '║   🤖  GREEN AI AGENT REQUEST                             ║'
+        echo '╠══════════════════════════════════════════════════════════╣'
+        echo "║  Attempt    : ${attempt}/${maxChecks}".take(61).padRight(61) + '║'
+        echo "║  Endpoint   : ${agentUrl}/api/check".take(61).padRight(61) + '║'
+        echo "║  Job        : ${jobName} #${buildNumber}".take(61).padRight(61) + '║'
+        echo '╚══════════════════════════════════════════════════════════╝'
+        echo ''
 
 
         // ============================================================
@@ -332,6 +337,7 @@ def call(Map config = [:]) {
 
         aiDecision   = 'deploy'
         aiStrategy   = 'rolling'
+        aiConfidence = 0.0d
         aiReason     = 'Agent response not parsed'
         aiCarbon     = 'unknown'
         aiGreenScore = 'N/A'
@@ -358,6 +364,10 @@ def call(Map config = [:]) {
             if (parsed.strategy != null) {
                 aiStrategy =
                     parsed.strategy.toString()
+            }
+
+            if (parsed.confidence != null) {
+                try { aiConfidence = parsed.confidence.toString().toDouble() } catch (ignored) {}
             }
 
             if (parsed.reason != null) {
@@ -458,21 +468,44 @@ def call(Map config = [:]) {
         // DISPLAY RESULT
         // ================================================================
 
-        echo "════════════════════════════════════════════"
-        echo " AI GREEN DEPLOYMENT DECISION"
-        echo "════════════════════════════════════════════"
-        echo " Decision        : ${aiDecision.toUpperCase()}"
-        echo " Strategy        : ${aiStrategy}"
-        echo " Carbon Rating   : ${aiCarbon}"
-        echo " Green Score     : ${aiGreenScore}/100 (${aiGreenGrade})"
-        echo " CO2 Saving Est. : ~${aiCo2Saving}%"
-        echo " Reason          : ${aiReason}"
+        def carbonEmoji  = aiCarbon == 'low' ? '🟢' : aiCarbon == 'medium' ? '🟡' : aiCarbon == 'high' ? '🟠' : '🔴'
+        def gradeEmoji   = aiGreenGrade == 'Excellent' ? '🏆' : aiGreenGrade == 'Good' ? '✅' : aiGreenGrade == 'Moderate' ? '🟡' : '🔴'
+        def stratEmoji   = aiStrategy == 'canary' ? '🐤' : aiStrategy == 'recreate' ? '♻️ ' : '🔄'
+        def agentStatus  = curlStatus == 0 ? '✅ CONNECTED' : '⚠️  UNREACHABLE (using defaults)'
+        def confBar      = _buildBar(aiConfidence, 20)
+        def confPct      = String.format('%.1f', aiConfidence * 100)
 
+        echo ''
+        echo '╔══════════════════════════════════════════════════════════╗'
+        echo '║   🤖  GREEN AI AGENT RESPONSE                            ║'
+        echo '╠══════════════════════════════════════════════════════════╣'
+        echo "║  Agent Status   : ${agentStatus.padRight(44)}║"
+        echo "║  ${stratEmoji} Strategy       : ${aiStrategy.padRight(44)}║"
+        echo "║  ${carbonEmoji} Carbon Rating  : ${aiCarbon.padRight(44)}║"
+        echo "║  ${gradeEmoji} Green Score    : ${(aiGreenScore + '/100  (' + aiGreenGrade + ')').padRight(44)}║"
+        echo "║  🎯 Confidence   : ${confPct}%  ${confBar.padRight(26)}║"
         if (aiWindow?.trim()) {
-            echo " Next Green Window: ${aiWindow}"
+            echo "║  🕐 Next Window  : ${aiWindow.padRight(44)}║"
+        }
+        echo '╠══════════════════════════════════════════════════════════╣'
+        echo "║  💬 Reason:                                              ║"
+
+        def reasonWords = aiReason.split(' ')
+        def rLine = '║     '
+        reasonWords.each { word ->
+            if ((rLine + word).length() > 59) {
+                echo (rLine.padRight(61) + '║')
+                rLine = '║     ' + word + ' '
+            } else {
+                rLine = rLine + word + ' '
+            }
+        }
+        if (rLine.trim() != '║') {
+            echo (rLine.padRight(61) + '║')
         }
 
-        echo "════════════════════════════════════════════"
+        echo '╚══════════════════════════════════════════════════════════╝'
+        echo ''
 
 
         // ================================================================
@@ -607,4 +640,14 @@ Then re-trigger this build manually.
 
         return 'rolling'
     }
+}
+
+// ================================================================
+// PRIVATE HELPERS
+// ================================================================
+
+private String _buildBar(double value, int width) {
+    def filled = Math.round(value * width).toInteger()
+    def empty  = width - filled
+    return '[' + ('█' * filled) + ('░' * empty) + ']'
 }
