@@ -71,9 +71,9 @@ def call(Map config = [:]) {
     echo '╠══════════════════════════════════════════════════════════╣'
     echo '║  TWO-MODEL ARCHITECTURE:                                 ║'
     echo '║  ┌─ Model 1: ML Optimizer (LightGBM)                     ║'
-    echo '║  │   Decides WHEN to deploy                               ║'
+    echo '║  │   Decides WHEN to deploy (Evaluated here)              ║'
     echo '║  └─ Model 2: AI Agent (Ollama LLM / ReAct)               ║'
-    echo '║      Decides HOW to deploy (strategy)                     ║'
+    echo '║      Decides HOW to deploy (Evaluated post-build)         ║'
     echo '╚══════════════════════════════════════════════════════════╝'
     echo ''
 
@@ -130,149 +130,8 @@ def call(Map config = [:]) {
     echo ''
 
 
-    // ================================================================
-    // MODEL 2 — GREEN AI AGENT STRATEGY QUERY
-    // ================================================================
-
-    echo ''
-    echo '╔══════════════════════════════════════════════════════════╗'
-    echo '║   🤖  MODEL 2: GREEN AI AGENT REQUEST                    ║'
-    echo '╠══════════════════════════════════════════════════════════╣'
-    echo "║  Endpoint   : ${agentUrl}/api/check".take(61).padRight(61) + '║'
-    echo '║  Model      : Ollama qwen2.5:1.5b (local LLM)            ║'
-    echo '║  Pattern    : ReAct (Reasoning + Acting)                  ║'
-    echo '║  Tools      : carbon_intensity, system_resources,         ║'
-    echo '║               time_context, deployment_history,           ║'
-    echo '║               next_green_window                           ║'
-    echo '╠══════════════════════════════════════════════════════════╣'
-    echo '║  Sending request... (timeout: 180s)                       ║'
-    echo '╚══════════════════════════════════════════════════════════╝'
-    echo ''
-
-    def aiStrategy       = 'rolling'
-    def aiConfidence     = 0.5d
-    def aiGreenScore     = 'N/A'
-    def aiGreenGrade     = 'N/A'
-    def aiCarbon         = 'unknown'
-    def aiReason         = 'Not available'
-    def aiAgentReachable = false
-
-    def requestFile  = 'gs_ai_request.json'
-    def responseFile = 'gs_ai_response.json'
-
-    def requestPayload = groovy.json.JsonOutput.toJson([
-        job_name     : jobName,
-        build_number : buildNumber
-    ])
-
-    writeFile(file: requestFile, text: requestPayload)
-
-    withEnv(["GREEN_AGENT_URL=${agentUrl}"]) {
-
-        def curlStatus = sh(
-            script: '''
-                set +e
-                rm -f gs_ai_response.json
-
-                curl -sS -f \\
-                    --connect-timeout 10 \\
-                    --max-time 180 \\
-                    --retry 0 \\
-                    -X POST \\
-                    "${GREEN_AGENT_URL}/api/check" \\
-                    -H "Content-Type: application/json" \\
-                    --data-binary "@gs_ai_request.json" \\
-                    -o gs_ai_response.json
-
-                EXIT_CODE=$?
-                if [ "$EXIT_CODE" -ne 0 ]; then
-                    echo "[greenSchedule] AI Agent request failed (exit ${EXIT_CODE})."
-                    exit "$EXIT_CODE"
-                fi
-                if [ ! -s gs_ai_response.json ]; then
-                    echo "[greenSchedule] AI Agent returned empty response."
-                    exit 4
-                fi
-                exit 0
-            ''',
-            returnStatus: true
-        )
-
-        if (curlStatus == 0) {
-            aiAgentReachable = true
-            try {
-                def raw    = readFile(responseFile).trim()
-                def parsed = new groovy.json.JsonSlurper().parseText(raw)
-
-                if (parsed.strategy != null) {
-                    aiStrategy = parsed.strategy.toString().toLowerCase().trim()
-                }
-                if (parsed.confidence != null) {
-                    try { aiConfidence = parsed.confidence.toString().toDouble() } catch (ignored) {}
-                }
-                if (parsed.green_score != null) {
-                    aiGreenScore = parsed.green_score.toString()
-                }
-                if (parsed.green_grade != null) {
-                    aiGreenGrade = parsed.green_grade.toString()
-                }
-                if (parsed.carbon_rating != null) {
-                    aiCarbon = parsed.carbon_rating.toString()
-                }
-                if (parsed.reason != null) {
-                    aiReason = parsed.reason.toString()
-                }
-                parsed = null
-
-            } catch (Exception e) {
-                echo "[greenSchedule] Could not parse AI Agent response: ${e.message}"
-                aiAgentReachable = false
-            }
-        }
-    }
-
-    // Validate strategy
-    if (!(aiStrategy in ['rolling', 'canary', 'recreate'])) {
-        aiStrategy = 'rolling'
-    }
-
-    // ── AI Agent response banner ──────────────────────────────────────────
-
-    def carbonEmoji  = aiCarbon == 'low' ? '🟢' : aiCarbon == 'medium' ? '🟡' : aiCarbon == 'high' ? '🟠' : '🔴'
-    def gradeEmoji   = aiGreenGrade == 'Excellent' ? '🏆' : aiGreenGrade == 'Good' ? '✅' : aiGreenGrade == 'Moderate' ? '🟡' : '🔴'
-    def stratEmoji   = aiStrategy == 'canary' ? '🐤' : aiStrategy == 'recreate' ? '♻️ ' : '🔄'
-    def agentStatus  = aiAgentReachable ? '✅ CONNECTED' : '⚠️  UNREACHABLE (using defaults)'
-    def confBar      = _buildBar(aiConfidence, 20)
-    def confPct      = String.format('%.1f', aiConfidence * 100)
-
-    echo ''
-    echo '╔══════════════════════════════════════════════════════════╗'
-    echo '║   🤖  MODEL 2: AI AGENT RESPONSE                        ║'
-    echo '╠══════════════════════════════════════════════════════════╣'
-    echo "║  Agent Status   : ${agentStatus.padRight(44)}║"
-    echo "║  ${stratEmoji} Strategy       : ${aiStrategy.padRight(44)}║"
-    echo "║  ${carbonEmoji} Carbon Rating  : ${aiCarbon.padRight(44)}║"
-    echo "║  ${gradeEmoji} Green Score    : ${(aiGreenScore + '/100  (' + aiGreenGrade + ')').padRight(44)}║"
-    echo "║  🎯 Confidence   : ${confPct}%  ${confBar.padRight(26)}║"
-    echo '╠══════════════════════════════════════════════════════════╣'
-    echo "║  💬 Reason:                                              ║"
-
-    def reasonWords = aiReason.split(' ')
-    def rLine = '║     '
-    reasonWords.each { word ->
-        if ((rLine + word).length() > 59) {
-            echo (rLine.padRight(61) + '║')
-            rLine = '║     ' + word + ' '
-        } else {
-            rLine = rLine + word + ' '
-        }
-    }
-    if (rLine.trim() != '║') {
-        echo (rLine.padRight(61) + '║')
-    }
-
-    echo '╚══════════════════════════════════════════════════════════╝'
-    echo ''
+    def aiStrategy       = ''
+    def aiConfidence     = 0.0d
 
 
     // ================================================================
@@ -327,7 +186,7 @@ def call(Map config = [:]) {
 
     echo ''
     echo '╔══════════════════════════════════════════════════════════╗'
-    echo '║      🌿  COMBINED GREEN SCHEDULING DECISION  🌿         ║'
+    echo '║      🌿  GREEN SCHEDULING DECISION  🌿                   ║'
     echo '╠══════════════════════════════════════════════════════════╣'
     echo '║                                                          ║'
     echo '║  ┌─────────────────────────────────────────────────┐    ║'
@@ -342,22 +201,12 @@ def call(Map config = [:]) {
     }
     echo '║  └─────────────────────────────────────────────────┘    ║'
     echo '║                                                          ║'
-    echo '║  ┌─────────────────────────────────────────────────┐    ║'
-    echo "║  │  🤖 AI Agent      →  HOW                        │    ║"
-    echo "║  │     Strategy    : ${stratEmoji} ${aiStrategy.padRight(30)}│    ║"
-    echo "║  │     Carbon      : ${carbonEmoji} ${aiCarbon.padRight(30)}│    ║"
-    echo "║  │     Green Score : ${(aiGreenScore + '/100 (' + aiGreenGrade + ')').padRight(31)}│    ║"
-    echo "║  │     Confidence  : ${confPct}%  ${confBar.take(19).padRight(19)}│    ║"
-    echo '║  └─────────────────────────────────────────────────┘    ║'
-    echo '║                                                          ║'
     echo '╠══════════════════════════════════════════════════════════╣'
 
     if (mlWantsToSchedule) {
         echo "║  ${mlEmoji} FINAL: RESCHEDULING to ${mlScheduledHour}:00  (${delayHours}h ${delayMins}m from now)        ║"
-        echo "║  ${stratEmoji}  When deployed, will use: ${aiStrategy}                  ║"
     } else {
         echo '║  🚀 FINAL: EXECUTE NOW — conditions are green            ║'
-        echo "║  ${stratEmoji}  Strategy selected: ${aiStrategy.padRight(38)}║"
     }
 
     echo '╚══════════════════════════════════════════════════════════╝'
