@@ -19,8 +19,8 @@
  *   scheduledHour        — int: target hour 0–23
  *   delaySeconds         — int: seconds from now until target hour
  *   preSelectedStrategy  — String: canary | rolling | recreate
- *   mlGreenProbability   — double: raw ML optimizer signal (confidence in scheduling)
- *   aiConfidence         — double: raw AI agent signal (confidence in strategy)
+ *   mlGreenProbability   — double: raw ML optimizer signal
+ *   aiConfidence         — double: raw AI agent signal
  *   reason               — String: human-readable explanation
  */
 
@@ -45,12 +45,37 @@ def call(Map config = [:]) {
 
     // ML Optimizer outputs — already in env vars from the Analyze stage
     def mlAction           = (config.schedulingAction ?: env.SCHEDULING_ACTION ?: 'execute_now').toString().trim()
-    def mlScheduledHourStr = (config.scheduledHour   ?: env.SCHEDULED_HOUR   ?: '0').toString().trim()
-    def mlGreenProbStr     = (config.greenProbability ?: env.GREEN_PROBABILITY ?: '0.5').toString().trim()
+    def mlScheduledHourStr = (config.scheduledHour    ?: env.SCHEDULED_HOUR    ?: '0').toString().trim()
+    def mlGreenProbStr     = (config.greenProbability ?: env.GREEN_PROBABILITY  ?: '0.5').toString().trim()
 
     def mlScheduledHour = mlScheduledHourStr.isInteger() ? mlScheduledHourStr.toInteger() : 0
     def mlGreenProb     = 0.5d
     try { mlGreenProb = mlGreenProbStr.toDouble() } catch (ignored) {}
+
+    def mlGreenPct  = String.format('%.1f', mlGreenProb * 100)
+    def mlDecision  = (mlAction == 'schedule') ? 'RESCHEDULE' : 'EXECUTE NOW'
+    def mlEmoji     = (mlAction == 'schedule') ? '⏸️ ' : '🚀'
+
+    // ================================================================
+    // OPENING SYSTEM BANNER
+    // ================================================================
+
+    echo ''
+    echo '╔══════════════════════════════════════════════════════════╗'
+    echo '║      🌱  GREEN DEPLOYMENT SCHEDULING SYSTEM  🌱         ║'
+    echo '╠══════════════════════════════════════════════════════════╣'
+    echo "║  Job          : ${jobName.take(44).padRight(44)}║"
+    echo "║  Build        : #${buildNumber.take(43).padRight(43)}║"
+    echo "║  Agent URL    : ${agentUrl.take(44).padRight(44)}║"
+    echo "║  Urgent Mode  : ${(urgentDeploy ? 'YES — green checks bypassed' : 'NO — full green check active').padRight(44)}║"
+    echo '╠══════════════════════════════════════════════════════════╣'
+    echo '║  TWO-MODEL ARCHITECTURE:                                 ║'
+    echo '║  ┌─ Model 1: ML Optimizer (LightGBM)                     ║'
+    echo '║  │   Decides WHEN to deploy                               ║'
+    echo '║  └─ Model 2: AI Agent (Ollama LLM / ReAct)               ║'
+    echo '║      Decides HOW to deploy (strategy)                     ║'
+    echo '╚══════════════════════════════════════════════════════════╝'
+    echo ''
 
 
     // ================================================================
@@ -59,7 +84,15 @@ def call(Map config = [:]) {
 
     if (urgentDeploy) {
 
-        echo '⚡ Urgent deployment — skipping Green Scheduling'
+        echo ''
+        echo '╔══════════════════════════════════════════════════════════╗'
+        echo '║  ⚡  URGENT DEPLOYMENT MODE ACTIVATED                    ║'
+        echo '╠══════════════════════════════════════════════════════════╣'
+        echo '║  Green scheduling bypassed by URGENT_DEPLOY=true         ║'
+        echo '║  Strategy: rolling (safe default)                        ║'
+        echo '║  All carbon checks skipped — deploying immediately       ║'
+        echo '╚══════════════════════════════════════════════════════════╝'
+        echo ''
 
         return [
             shouldSchedule      : false,
@@ -74,18 +107,54 @@ def call(Map config = [:]) {
 
 
     // ================================================================
-    // GREEN AI AGENT STRATEGY QUERY
+    // MODEL 1 — ML OPTIMIZER RESULT BANNER
     // ================================================================
-    //
-    // One HTTP call only. The response gives us:
-    //   - deploy strategy (canary / rolling / recreate)
-    //   - confidence score
-    //
-    // Timeout: 180 seconds. On failure → safe fallback values.
+
+    def mlConfidenceBar = _buildBar(mlGreenProb, 20)
+
+    echo ''
+    echo '╔══════════════════════════════════════════════════════════╗'
+    echo '║   📊  MODEL 1: ML OPTIMIZER (LightGBM) RESULT           ║'
+    echo '╠══════════════════════════════════════════════════════════╣'
+    echo "║  Input Action         : ${mlAction.padRight(35)}║"
+    echo "║  ${mlEmoji} Decision            : ${mlDecision.padRight(35)}║"
+    echo "║  🎯 Green Probability  : ${mlGreenPct}%  ${mlConfidenceBar.padRight(26)}║"
+    if (mlAction == 'schedule') {
+        echo "║  🕐 Scheduled Hour     : ${mlScheduledHour}:00  (next occurrence)              ║"
+    }
+    echo '╠══════════════════════════════════════════════════════════╣'
+    echo '║  ML Model: LightGBM trained on carbon intensity          ║'
+    echo '║  Features: lag/rolling-window carbon signals             ║'
+    echo '║  Metric:   F1=0.979 | AUC-ROC=0.999 (5-fold CV)         ║'
+    echo '╚══════════════════════════════════════════════════════════╝'
+    echo ''
+
+
     // ================================================================
+    // MODEL 2 — GREEN AI AGENT STRATEGY QUERY
+    // ================================================================
+
+    echo ''
+    echo '╔══════════════════════════════════════════════════════════╗'
+    echo '║   🤖  MODEL 2: GREEN AI AGENT REQUEST                    ║'
+    echo '╠══════════════════════════════════════════════════════════╣'
+    echo "║  Endpoint   : ${agentUrl}/api/check".take(61).padRight(61) + '║'
+    echo '║  Model      : Ollama qwen2.5:1.5b (local LLM)            ║'
+    echo '║  Pattern    : ReAct (Reasoning + Acting)                  ║'
+    echo '║  Tools      : carbon_intensity, system_resources,         ║'
+    echo '║               time_context, deployment_history,           ║'
+    echo '║               next_green_window                           ║'
+    echo '╠══════════════════════════════════════════════════════════╣'
+    echo '║  Sending request... (timeout: 180s)                       ║'
+    echo '╚══════════════════════════════════════════════════════════╝'
+    echo ''
 
     def aiStrategy       = 'rolling'
     def aiConfidence     = 0.5d
+    def aiGreenScore     = 'N/A'
+    def aiGreenGrade     = 'N/A'
+    def aiCarbon         = 'unknown'
+    def aiReason         = 'Not available'
     def aiAgentReachable = false
 
     def requestFile  = 'gs_ai_request.json'
@@ -141,22 +210,69 @@ def call(Map config = [:]) {
                 if (parsed.confidence != null) {
                     try { aiConfidence = parsed.confidence.toString().toDouble() } catch (ignored) {}
                 }
+                if (parsed.green_score != null) {
+                    aiGreenScore = parsed.green_score.toString()
+                }
+                if (parsed.green_grade != null) {
+                    aiGreenGrade = parsed.green_grade.toString()
+                }
+                if (parsed.carbon_rating != null) {
+                    aiCarbon = parsed.carbon_rating.toString()
+                }
+                if (parsed.reason != null) {
+                    aiReason = parsed.reason.toString()
+                }
                 parsed = null
+
             } catch (Exception e) {
                 echo "[greenSchedule] Could not parse AI Agent response: ${e.message}"
-                echo "[greenSchedule] Using AI fallback values."
                 aiAgentReachable = false
             }
-        } else {
-            echo "[greenSchedule] ⚠️ Green AI Agent unreachable (curl exit ${curlStatus}). Using default strategy."
         }
     }
 
     // Validate strategy
     if (!(aiStrategy in ['rolling', 'canary', 'recreate'])) {
-        echo "[greenSchedule] ⚠️ Invalid strategy '${aiStrategy}' from AI Agent. Falling back to rolling."
         aiStrategy = 'rolling'
     }
+
+    // ── AI Agent response banner ──────────────────────────────────────────
+
+    def carbonEmoji  = aiCarbon == 'low' ? '🟢' : aiCarbon == 'medium' ? '🟡' : aiCarbon == 'high' ? '🟠' : '🔴'
+    def gradeEmoji   = aiGreenGrade == 'Excellent' ? '🏆' : aiGreenGrade == 'Good' ? '✅' : aiGreenGrade == 'Moderate' ? '🟡' : '🔴'
+    def stratEmoji   = aiStrategy == 'canary' ? '🐤' : aiStrategy == 'recreate' ? '♻️ ' : '🔄'
+    def agentStatus  = aiAgentReachable ? '✅ CONNECTED' : '⚠️  UNREACHABLE (using defaults)'
+    def confBar      = _buildBar(aiConfidence, 20)
+    def confPct      = String.format('%.1f', aiConfidence * 100)
+
+    echo ''
+    echo '╔══════════════════════════════════════════════════════════╗'
+    echo '║   🤖  MODEL 2: AI AGENT RESPONSE                        ║'
+    echo '╠══════════════════════════════════════════════════════════╣'
+    echo "║  Agent Status   : ${agentStatus.padRight(44)}║"
+    echo "║  ${stratEmoji} Strategy       : ${aiStrategy.padRight(44)}║"
+    echo "║  ${carbonEmoji} Carbon Rating  : ${aiCarbon.padRight(44)}║"
+    echo "║  ${gradeEmoji} Green Score    : ${(aiGreenScore + '/100  (' + aiGreenGrade + ')').padRight(44)}║"
+    echo "║  🎯 Confidence   : ${confPct}%  ${confBar.padRight(26)}║"
+    echo '╠══════════════════════════════════════════════════════════╣'
+    echo "║  💬 Reason:                                              ║"
+
+    def reasonWords = aiReason.split(' ')
+    def rLine = '║     '
+    reasonWords.each { word ->
+        if ((rLine + word).length() > 59) {
+            echo (rLine.padRight(61) + '║')
+            rLine = '║     ' + word + ' '
+        } else {
+            rLine = rLine + word + ' '
+        }
+    }
+    if (rLine.trim() != '║') {
+        echo (rLine.padRight(61) + '║')
+    }
+
+    echo '╚══════════════════════════════════════════════════════════╝'
+    echo ''
 
 
     // ================================================================
@@ -175,12 +291,17 @@ def call(Map config = [:]) {
         if (parseOk) {
             def delaySecs = _computeDelaySeconds(targetHour)
 
-            echo '════════════════════════════════════════════'
-            echo ' 🌿 GREEN SCHEDULING — DEVELOPER OVERRIDE'
-            echo " Target Hour          : ${targetHour}:00"
-            echo " Delay                : ${delaySecs}s"
-            echo " Pre-selected Strategy: ${aiStrategy}"
-            echo '════════════════════════════════════════════'
+            echo ''
+            echo '╔══════════════════════════════════════════════════════════╗'
+            echo '║   🛠️   DEVELOPER OVERRIDE ACTIVE                        ║'
+            echo '╠══════════════════════════════════════════════════════════╣'
+            echo "║  Override Hour    : ${targetHour}:00                                    ║"
+            echo "║  Delay            : ${delaySecs}s (${(delaySecs/3600).toInteger()}h until target)              ║"
+            echo "║  Strategy (AI)    : ${aiStrategy.padRight(44)}║"
+            echo '╠══════════════════════════════════════════════════════════╣'
+            echo '║  ⏸️  Scheduling as requested by developer override        ║'
+            echo '╚══════════════════════════════════════════════════════════╝'
+            echo ''
 
             return [
                 shouldSchedule      : true,
@@ -196,24 +317,54 @@ def call(Map config = [:]) {
 
 
     // ================================================================
-    // FINAL SCHEDULING DECISION
+    // COMBINED FINAL DECISION BANNER
     // ================================================================
 
     def mlWantsToSchedule = (mlAction == 'schedule')
-    
-    if (mlWantsToSchedule) {
-        def delaySecs = _computeDelaySeconds(mlScheduledHour)
-        def reason = "ML Optimizer recommends scheduling for ${mlScheduledHour}:00 (prob=${String.format('%.2f', mlGreenProb)})"
-        
-        echo '════════════════════════════════════════════'
-        echo ' 🌿 GREEN SCHEDULING — RESCHEDULING'
-        echo " ML Probability       : ${String.format('%.2f', mlGreenProb)}"
-        echo " Schedule Decided By  : ML Optimizer → ${mlScheduledHour}:00"
-        echo " Delay Time           : ${delaySecs} seconds"
-        echo " Strategy Decided By  : AI Agent → ${aiStrategy} (conf=${String.format('%.2f', aiConfidence)})"
-        echo " Reason               : ${reason}"
-        echo '════════════════════════════════════════════'
+    def delaySecs = mlWantsToSchedule ? _computeDelaySeconds(mlScheduledHour) : 0
+    def delayHours = (delaySecs / 3600).toInteger()
+    def delayMins  = ((delaySecs % 3600) / 60).toInteger()
 
+    echo ''
+    echo '╔══════════════════════════════════════════════════════════╗'
+    echo '║      🌿  COMBINED GREEN SCHEDULING DECISION  🌿         ║'
+    echo '╠══════════════════════════════════════════════════════════╣'
+    echo '║                                                          ║'
+    echo '║  ┌─────────────────────────────────────────────────┐    ║'
+    echo "║  │  📊 ML Optimizer  →  WHEN                       │    ║"
+    echo "║  │     Decision    : ${mlDecision.padRight(32)}│    ║"
+    echo "║  │     Probability : ${mlGreenPct}%  ${mlConfidenceBar.padRight(21)}│    ║"
+    if (mlWantsToSchedule) {
+        echo "║  │     Target Hour : ${mlScheduledHour}:00                              │    ║"
+        echo "║  │     Wait Time   : ${delayHours}h ${delayMins}m                            │    ║"
+    } else {
+        echo "║  │     Action      : Deploy immediately                 │    ║"
+    }
+    echo '║  └─────────────────────────────────────────────────┘    ║'
+    echo '║                                                          ║'
+    echo '║  ┌─────────────────────────────────────────────────┐    ║'
+    echo "║  │  🤖 AI Agent      →  HOW                        │    ║"
+    echo "║  │     Strategy    : ${stratEmoji} ${aiStrategy.padRight(30)}│    ║"
+    echo "║  │     Carbon      : ${carbonEmoji} ${aiCarbon.padRight(30)}│    ║"
+    echo "║  │     Green Score : ${(aiGreenScore + '/100 (' + aiGreenGrade + ')').padRight(31)}│    ║"
+    echo "║  │     Confidence  : ${confPct}%  ${confBar.take(19).padRight(19)}│    ║"
+    echo '║  └─────────────────────────────────────────────────┘    ║'
+    echo '║                                                          ║'
+    echo '╠══════════════════════════════════════════════════════════╣'
+
+    if (mlWantsToSchedule) {
+        echo "║  ${mlEmoji} FINAL: RESCHEDULING to ${mlScheduledHour}:00  (${delayHours}h ${delayMins}m from now)        ║"
+        echo "║  ${stratEmoji}  When deployed, will use: ${aiStrategy}                  ║"
+    } else {
+        echo '║  🚀 FINAL: EXECUTE NOW — conditions are green            ║'
+        echo "║  ${stratEmoji}  Strategy selected: ${aiStrategy.padRight(38)}║"
+    }
+
+    echo '╚══════════════════════════════════════════════════════════╝'
+    echo ''
+
+    if (mlWantsToSchedule) {
+        def reason = "ML Optimizer recommends scheduling for ${mlScheduledHour}:00 (prob=${String.format('%.2f', mlGreenProb)})"
         return [
             shouldSchedule      : true,
             scheduledHour       : mlScheduledHour,
@@ -224,16 +375,6 @@ def call(Map config = [:]) {
             reason              : reason
         ]
     } else {
-        def reason = 'ML Optimizer confirms a green window right now'
-        
-        echo '════════════════════════════════════════════'
-        echo ' 🌿 GREEN SCHEDULING — EXECUTE NOW'
-        echo " ML Probability       : ${String.format('%.2f', mlGreenProb)}"
-        echo " Schedule Decided By  : ML Optimizer → Now"
-        echo " Strategy Decided By  : AI Agent → ${aiStrategy} (conf=${String.format('%.2f', aiConfidence)})"
-        echo " Reason               : ${reason}"
-        echo '════════════════════════════════════════════'
-
         return [
             shouldSchedule      : false,
             scheduledHour       : 0,
@@ -241,7 +382,7 @@ def call(Map config = [:]) {
             preSelectedStrategy : aiStrategy,
             mlGreenProbability  : mlGreenProb,
             aiConfidence        : aiConfidence,
-            reason              : reason
+            reason              : 'ML Optimizer confirms a green window right now'
         ]
     }
 }
@@ -251,14 +392,16 @@ def call(Map config = [:]) {
 // PRIVATE HELPERS
 // ================================================================
 
-/**
- * Compute delay in seconds from now until the given target hour.
- * Always returns a positive value (schedules for today or tomorrow).
- */
 private int _computeDelaySeconds(int targetHour) {
     def hoursToWait = targetHour - new Date().getHours()
     if (hoursToWait <= 0) {
         hoursToWait += 24
     }
     return hoursToWait * 3600
+}
+
+private String _buildBar(double value, int width) {
+    def filled = Math.round(value * width).toInteger()
+    def empty  = width - filled
+    return '[' + ('█' * filled) + ('░' * empty) + ']'
 }
