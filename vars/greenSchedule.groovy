@@ -62,7 +62,7 @@ def call(Map config = [:]) {
 
     echo ''
     echo '╔══════════════════════════════════════════════════════════╗'
-    echo '║      🌱  GREEN DEPLOYMENT SCHEDULING SYSTEM  🌱         ║'
+    echo '║      🌱  GREEN DEPLOYMENT SCHEDULING SYSTEM  🌱          ║'
     echo '╠══════════════════════════════════════════════════════════╣'
     echo "║  Job          : ${jobName.take(44).padRight(44)}║"
     echo "║  Build        : #${buildNumber.take(43).padRight(43)}║"
@@ -71,9 +71,9 @@ def call(Map config = [:]) {
     echo '╠══════════════════════════════════════════════════════════╣'
     echo '║  TWO-MODEL ARCHITECTURE:                                 ║'
     echo '║  ┌─ Model 1: ML Optimizer (LightGBM)                     ║'
-    echo '║  │   Decides WHEN to deploy (Evaluated here)              ║'
+    echo '║  │   Decides WHEN to deploy (Evaluated here)             ║'
     echo '║  └─ Model 2: AI Agent (Ollama LLM / ReAct)               ║'
-    echo '║      Decides HOW to deploy (Evaluated post-build)         ║'
+    echo '║      Decides HOW to deploy (Evaluated post-build)        ║'
     echo '╚══════════════════════════════════════════════════════════╝'
     echo ''
 
@@ -86,7 +86,7 @@ def call(Map config = [:]) {
 
         echo ''
         echo '╔══════════════════════════════════════════════════════════╗'
-        echo '║  ⚡  URGENT DEPLOYMENT MODE ACTIVATED                    ║'
+        echo '║  ⚡  URGENT DEPLOYMENT MODE ACTIVATED                     ║'
         echo '╠══════════════════════════════════════════════════════════╣'
         echo '║  Green scheduling bypassed by URGENT_DEPLOY=true         ║'
         echo '║  Strategy: rolling (safe default)                        ║'
@@ -114,7 +114,7 @@ def call(Map config = [:]) {
 
     echo ''
     echo '╔══════════════════════════════════════════════════════════╗'
-    echo '║   📊  MODEL 1: ML OPTIMIZER (LightGBM) RESULT           ║'
+    echo '║   📊  MODEL 1: ML OPTIMIZER (LightGBM) RESULT            ║'
     echo '╠══════════════════════════════════════════════════════════╣'
     echo "║  Input Action         : ${mlAction.padRight(35)}║"
     echo "║  ${mlEmoji} Decision            : ${mlDecision.padRight(35)}║"
@@ -125,7 +125,7 @@ def call(Map config = [:]) {
     echo '╠══════════════════════════════════════════════════════════╣'
     echo '║  ML Model: LightGBM trained on carbon intensity          ║'
     echo '║  Features: lag/rolling-window carbon signals             ║'
-    echo '║  Metric:   F1=0.979 | AUC-ROC=0.999 (5-fold CV)         ║'
+    echo '║  Metric:   F1=0.979 | AUC-ROC=0.999 (5-fold CV)          ║'
     echo '╚══════════════════════════════════════════════════════════╝'
     echo ''
 
@@ -152,13 +152,13 @@ def call(Map config = [:]) {
 
             echo ''
             echo '╔══════════════════════════════════════════════════════════╗'
-            echo '║   🛠️   DEVELOPER OVERRIDE ACTIVE                        ║'
+            echo '║   🛠️   DEVELOPER OVERRIDE ACTIVE                         ║'
             echo '╠══════════════════════════════════════════════════════════╣'
             echo "║  Override Hour    : ${targetHour}:00                                    ║"
             echo "║  Delay            : ${delaySecs}s (${(delaySecs/3600).toInteger()}h until target)              ║"
             echo "║  Strategy (AI)    : ${aiStrategy.padRight(44)}║"
             echo '╠══════════════════════════════════════════════════════════╣'
-            echo '║  ⏸️  Scheduling as requested by developer override        ║'
+            echo '║  ⏸️  Scheduling as requested by developer override       ║'
             echo '╚══════════════════════════════════════════════════════════╝'
             echo ''
 
@@ -189,8 +189,8 @@ def call(Map config = [:]) {
     echo '║      🌿  GREEN SCHEDULING DECISION  🌿                   ║'
     echo '╠══════════════════════════════════════════════════════════╣'
     echo '║                                                          ║'
-    echo '║  ┌─────────────────────────────────────────────────┐    ║'
-    echo "║  │  📊 ML Optimizer  →  WHEN                       │    ║"
+    echo '║  ┌─────────────────────────────────────────────────┐     ║'
+    echo "║  │  📊 ML Optimizer  →  WHEN                       │     ║"
     echo "║  │     Decision    : ${mlDecision.padRight(32)}│    ║"
     echo "║  │     Probability : ${mlGreenPct}%  ${mlConfidenceBar.padRight(21)}│    ║"
     if (mlWantsToSchedule) {
@@ -199,7 +199,7 @@ def call(Map config = [:]) {
     } else {
         echo "║  │     Action      : Deploy immediately                 │    ║"
     }
-    echo '║  └─────────────────────────────────────────────────┘    ║'
+    echo '║  └─────────────────────────────────────────────────┘     ║'
     echo '║                                                          ║'
     echo '╠══════════════════════════════════════════════════════════╣'
 
