@@ -483,9 +483,6 @@ def call(Map config = [:]) {
         echo "║  ${stratEmoji} Strategy       : ${aiStrategy.padRight(44)}║"
         echo "║  ${gradeEmoji} Green Score    : ${(aiGreenScore + '/100  (' + aiGreenGrade + ')').padRight(44)}║"
         echo "║  🎯 Confidence   : ${confPct}%  ${confBar.padRight(26)}║"
-        if (aiWindow?.trim()) {
-            echo "║  🕐 Next Window  : ${aiWindow.padRight(44)}║"
-        }
         echo '╠══════════════════════════════════════════════════════════╣'
         echo "║  💬 Reason:                                              ║"
 
