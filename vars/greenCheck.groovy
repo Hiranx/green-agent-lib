@@ -481,7 +481,6 @@ def call(Map config = [:]) {
         echo '╠══════════════════════════════════════════════════════════╣'
         echo "║  Agent Status   : ${agentStatus.padRight(44)}║"
         echo "║  ${stratEmoji} Strategy       : ${aiStrategy.padRight(44)}║"
-        echo "║  ${carbonEmoji} Carbon Rating  : ${aiCarbon.padRight(44)}║"
         echo "║  ${gradeEmoji} Green Score    : ${(aiGreenScore + '/100  (' + aiGreenGrade + ')').padRight(44)}║"
         echo "║  🎯 Confidence   : ${confPct}%  ${confBar.padRight(26)}║"
         if (aiWindow?.trim()) {
@@ -539,7 +538,6 @@ def call(Map config = [:]) {
 
             echo "✅ Green window confirmed after ${attempt} check(s)."
             echo "   Strategy : ${env.DEPLOY_STRATEGY}"
-            echo "   Carbon   : ${env.CARBON_RATING}"
             echo "   Score    : ${env.AI_GREEN_SCORE}/100 (${env.AI_GREEN_GRADE})"
 
             echo "🌿 AI selected deployment strategy: ${env.DEPLOY_STRATEGY}"
@@ -585,7 +583,6 @@ def call(Map config = [:]) {
 ⚠️ Green AI Agent recommended waiting for ${maxWaitHours} hours straight.
 
 Last reason   : ${aiReason}
-Carbon Rating : ${aiCarbon}
 Green Score   : ${aiGreenScore}/100 (${aiGreenGrade})
 Next Window   : ${aiWindow ?: 'unknown'}
 
