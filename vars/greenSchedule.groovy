@@ -62,7 +62,7 @@ def call(Map config = [:]) {
 
     echo ''
     echo '╔══════════════════════════════════════════════════════════╗'
-    echo '║      🌱  GREEN DEPLOYMENT SCHEDULING SYSTEM  🌱          ║'
+    echo '║      🌱  GREEN BUILD + DEPLOYMENT SCHEDULING SYSTEM  🌱   ║'
     echo '╠══════════════════════════════════════════════════════════╣'
     echo "║  Job          : ${jobName.take(44).padRight(44)}║"
     echo "║  Build        : #${buildNumber.take(43).padRight(43)}║"
