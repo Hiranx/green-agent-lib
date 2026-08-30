@@ -481,6 +481,7 @@ def call(Map config = [:]) {
         echo '╠══════════════════════════════════════════════════════════╣'
         echo "║  Agent Status   : ${agentStatus.padRight(44)}║"
         echo "║  ${stratEmoji} Strategy       : ${aiStrategy.padRight(44)}║"
+        echo "║  ${carbonEmoji} Carbon Rating  : ${aiCarbon.padRight(44)}║"
         echo "║  ${gradeEmoji} Green Score    : ${(aiGreenScore + '/100  (' + aiGreenGrade + ')').padRight(44)}║"
         echo "║  🎯 Confidence   : ${confPct}%  ${confBar.padRight(26)}║"
         echo '╠══════════════════════════════════════════════════════════╣'
